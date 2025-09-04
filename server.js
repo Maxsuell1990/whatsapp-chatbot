@@ -13,17 +13,26 @@ const ORCHESTRATOR_URL = process.env.ORCHESTRATOR_URL || 'http://localhost:8000'
 app.use(cors());
 app.use(express.json());
 
-// Inicializar cliente WhatsApp
+// Estado do cliente
+let clientReady = false;
+
+// Inicializar cliente WhatsApp com configurações do Puppeteer para Render
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        headless: false,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process',
+            '--disable-gpu'
+        ]
     }
 });
-
-// Estado do cliente
-let clientReady = false;
 
 // Eventos do cliente WhatsApp
 client.on('qr', (qr) => {
@@ -32,34 +41,30 @@ client.on('qr', (qr) => {
 });
 
 client.on('ready', () => {
-    console.log('Cliente WhatsApp está pronto!');
+    console.log('✅ Cliente WhatsApp está pronto!');
     clientReady = true;
 });
 
 client.on('authenticated', () => {
-    console.log('Cliente WhatsApp autenticado!');
+    console.log('🔐 Cliente WhatsApp autenticado!');
 });
 
 client.on('auth_failure', (msg) => {
-    console.error('Falha na autenticação:', msg);
+    console.error('❌ Falha na autenticação:', msg);
 });
 
 client.on('disconnected', (reason) => {
-    console.log('Cliente WhatsApp desconectado:', reason);
+    console.log('⚠️ Cliente WhatsApp desconectado:', reason);
     clientReady = false;
 });
 
 // Manipular mensagens recebidas
 client.on('message', async (message) => {
     try {
-        // Ignorar mensagens de grupos e status
-        if (message.from.includes('@g.us') || message.from.includes('status@broadcast')) {
-            return;
-        }
+        if (message.from.includes('@g.us') || message.from.includes('status@broadcast')) return;
 
-        console.log(`Mensagem recebida de ${message.from}: ${message.body}`);
+        console.log(`📩 Mensagem de ${message.from}: ${message.body}`);
 
-        // Preparar dados para enviar ao orquestrador
         const messageData = {
             from: message.from,
             body: message.body,
@@ -67,22 +72,17 @@ client.on('message', async (message) => {
             type: message.type
         };
 
-        // Enviar para o orquestrador
         const response = await axios.post(`${ORCHESTRATOR_URL}/process-message`, messageData);
-        
-        if (response.data && response.data.reply) {
-            // Enviar resposta de volta
+
+        if (response.data?.reply) {
             await client.sendMessage(message.from, response.data.reply);
-            console.log(`Resposta enviada para ${message.from}: ${response.data.reply}`);
+            console.log(`📤 Resposta enviada para ${message.from}: ${response.data.reply}`);
         }
 
     } catch (error) {
         console.error('Erro ao processar mensagem:', error.message);
-        
-        // Enviar mensagem de erro genérica
         try {
-            await client.sendMessage(message.from, 
-                'Desculpe, ocorreu um erro temporário. Tente novamente em alguns instantes.');
+            await client.sendMessage(message.from, 'Erro temporário. Tente novamente.');
         } catch (sendError) {
             console.error('Erro ao enviar mensagem de erro:', sendError.message);
         }
@@ -91,28 +91,22 @@ client.on('message', async (message) => {
 
 // Rotas da API
 app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
+    res.json({
+        status: 'ok',
         whatsapp_ready: clientReady,
         timestamp: new Date().toISOString()
     });
 });
 
 app.post('/send-message', async (req, res) => {
+    const { to, message } = req.body;
+
+    if (!clientReady) return res.status(503).json({ error: 'Cliente WhatsApp não está pronto' });
+    if (!to || !message) return res.status(400).json({ error: 'Campos "to" e "message" são obrigatórios' });
+
     try {
-        const { to, message } = req.body;
-
-        if (!clientReady) {
-            return res.status(503).json({ error: 'Cliente WhatsApp não está pronto' });
-        }
-
-        if (!to || !message) {
-            return res.status(400).json({ error: 'Campos "to" e "message" são obrigatórios' });
-        }
-
         await client.sendMessage(to, message);
         res.json({ success: true, message: 'Mensagem enviada com sucesso' });
-
     } catch (error) {
         console.error('Erro ao enviar mensagem:', error.message);
         res.status(500).json({ error: 'Erro interno do servidor' });
@@ -130,21 +124,18 @@ app.get('/status', (req, res) => {
 });
 
 // Inicializar cliente WhatsApp
-console.log('Inicializando cliente WhatsApp...');
+console.log('🚀 Inicializando cliente WhatsApp...');
 client.initialize();
 
 // Iniciar servidor
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Gateway rodando na porta ${PORT}`);
-    console.log(`Health check: http://localhost:${PORT}/health`);
+    console.log(`🟢 Gateway rodando na porta ${PORT}`);
+    console.log(`🔍 Health check: http://localhost:${PORT}/health`);
 });
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
-    console.log('Encerrando aplicação...');
-    if (clientReady) {
-        await client.destroy();
-    }
+    console.log('🔻 Encerrando aplicação...');
+    if (clientReady) await client.destroy();
     process.exit(0);
 });
-
